@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Souls-Like Demo (Three.js)</title>
+<style>
+html,body{margin:0;padding:0;overflow:hidden;background:#000;font-family:sans-serif}
+#hud{position:absolute;top:10px;left:10px;color:#fff;font-size:14px}
+.bar{width:200px;height:10px;background:#333;margin-bottom:4px}
+.fill{height:100%}
+#health .fill{background:#c33}
+#stamina .fill{background:#3c3}
+#mana .fill{background:#33c}
+#compass{margin-top:6px}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="health" class="bar"><div class="fill"></div></div>
+  <div id="stamina" class="bar"><div class="fill"></div></div>
+  <div id="mana" class="bar"><div class="fill"></div></div>
+  <div id="compass">N</div>
+</div>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js";
+
+//////////////////// BASIC SETUP ////////////////////
+const scene=new THREE.Scene();
+scene.fog=new THREE.Fog(0x88aacc,30,200);
+
+const camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,0.1,500);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+document.body.appendChild(renderer.domElement);
+
+window.addEventListener("resize",()=>{
+ camera.aspect=innerWidth/innerHeight;
+ camera.updateProjectionMatrix();
+ renderer.setSize(innerWidth,innerHeight);
+});
+
+//////////////////// LIGHT & DAY/NIGHT ////////////////////
+const sun=new THREE.DirectionalLight(0xffffff,1);
+sun.position.set(50,100,50);
+sun.castShadow=true;
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0x404040));
+
+let timeOfDay=0;
+
+//////////////////// TERRAIN ////////////////////
+const groundGeo=new THREE.PlaneGeometry(200,200,50,50);
+groundGeo.rotateX(-Math.PI/2);
+const pos=groundGeo.attributes.position;
+for(let i=0;i<pos.count;i++){
+ const y=Math.sin(pos.getX(i)*0.1)*Math.cos(pos.getZ(i)*0.1)*2;
+ pos.setY(i,y);
+}
+pos.needsUpdate=true;
+groundGeo.computeVertexNormals();
+const ground=new THREE.Mesh(groundGeo,new THREE.MeshStandardMaterial({color:0x335533}));
+ground.receiveShadow=true;
+scene.add(ground);
+
+//////////////////// PLAYER ////////////////////
+const player={
+ mesh:new THREE.Mesh(
+   new THREE.CapsuleGeometry(0.5,1.2,4,8),
+   new THREE.MeshStandardMaterial({color:0xcccccc})
+ ),
+ vel:new THREE.Vector3(),
+ health:100,stamina:100,mana:50,
+ invuln:0,onGround:false
+};
+player.mesh.castShadow=true;
+player.mesh.position.set(0,2,0);
+scene.add(player.mesh);
+
+//////////////////// ENEMIES ////////////////////
+function makeEnemy(x,z,boss=false){
+ const e={
+  boss,
+  mesh:new THREE.Mesh(
+    new THREE.BoxGeometry(boss?3:1.2,boss?4:2,boss?3:1.2),
+    new THREE.MeshStandardMaterial({color:boss?0x882222:0x883333})
+  ),
+  health:boss?300:50,
+  state:"idle",
+  vel:new THREE.Vector3(),
+  phase:1
+ };
+ e.mesh.position.set(x,2,z);
+ e.mesh.castShadow=true;
+ scene.add(e.mesh);
+ return e;
+}
+const enemies=[
+ makeEnemy(10,10,false),
+ makeEnemy(-12,8,false),
+ makeEnemy(0,30,true)
+];
+
+//////////////////// INPUT ////////////////////
+const keys={};
+window.addEventListener("keydown",e=>keys[e.code]=true);
+window.addEventListener("keyup",e=>keys[e.code]=false);
+
+//////////////////// CAMERA ////////////////////
+let camYaw=0,camPitch=0;
+window.addEventListener("mousemove",e=>{
+ if(document.pointerLockElement){
+  camYaw-=e.movementX*0.002;
+  camPitch=Math.max(-1.2,Math.min(0.5,camPitch-e.movementY*0.002));
+ }
+});
+renderer.domElement.addEventListener("click",()=>renderer.domElement.requestPointerLock());
+
+//////////////////// AUDIO ////////////////////
+const audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+function beep(freq,dur){
+ const o=audioCtx.createOscillator();
+ const g=audioCtx.createGain();
+ o.frequency.value=freq;
+ o.connect(g);g.connect(audioCtx.destination);
+ o.start();
+ g.gain.setValueAtTime(0.2,audioCtx.currentTime);
+ g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+dur);
+ o.stop(audioCtx.currentTime+dur);
+}
+
+//////////////////// HELPERS ////////////////////
+function clamp(v,min,max){return Math.max(min,Math.min(max,v));}
+function updateHUD(){
+ document.querySelector("#health .fill").style.width=(player.health)+"%";
+ document.querySelector("#stamina .fill").style.width=(player.stamina)+"%";
+ document.querySelector("#mana .fill").style.width=(player.mana*2)+"%";
+}
+
+//////////////////// GAME LOOP ////////////////////
+const clock=new THREE.Clock();
+function animate(){
+ requestAnimationFrame(animate);
+ const dt=clock.getDelta();
+
+ ////// DAY/NIGHT
+ timeOfDay+=dt*0.02;
+ sun.intensity=0.2+Math.max(0,Math.sin(timeOfDay*Math.PI*2));
+ sun.position.set(Math.cos(timeOfDay*6.28)*50,60,Math.sin(timeOfDay*6.28)*50);
+
+ ////// PLAYER MOVE
+ let speed=keys["ShiftLeft"]?8:4;
+ if(keys["ShiftLeft"]) player.stamina-=20*dt;
+ if(player.stamina<0){speed=4;player.stamina=0;}
+ const dir=new THREE.Vector3(
+  (keys["KeyA"]?-1:0)+(keys["KeyD"]?1:0),
+  0,
+  (keys["KeyW"]?-1:0)+(keys["KeyS"]?1:0)
+ ).normalize();
+ dir.applyAxisAngle(new THREE.Vector3(0,1,0),camYaw);
+ player.vel.x=dir.x*speed;
+ player.vel.z=dir.z*speed;
+ player.vel.y-=20*dt;
+
+ if(keys["Space"]&&player.onGround){
+  player.vel.y=8;
+  player.onGround=false;
+ }
+
+ player.mesh.position.addScaledVector(player.vel,dt);
+ if(player.mesh.position.y<1){
+  player.mesh.position.y=1;
+  player.vel.y=0;
+  player.onGround=true;
+ }
+
+ player.stamina=clamp(player.stamina+10*dt,0,100);
+ if(player.invuln>0) player.invuln-=dt;
+
+ ////// ATTACK
+ if(keys["Mouse0"]&&player.stamina>20){
+  keys["Mouse0"]=false;
+  player.stamina-=20;
+  beep(200,0.1);
+  enemies.forEach(e=>{
+   if(e.health>0&&e.mesh.position.distanceTo(player.mesh.position)<2){
+    e.health-=20;
+    if(e.health<=0) scene.remove(e.mesh);
+   }
+  });
+ }
+
+ ////// ENEMIES
+ enemies.forEach(e=>{
+  if(e.health<=0) return;
+  const d=e.mesh.position.distanceTo(player.mesh.position);
+  if(d<20) e.state="aggro";
+  if(e.state==="aggro"){
+   const v=player.mesh.position.clone().sub(e.mesh.position).normalize();
+   e.mesh.position.addScaledVector(v,(e.boss?3:2)*dt);
+   if(d<2&&player.invuln<=0){
+    player.health-=e.boss?30:10;
+    player.invuln=0.8;
+    beep(80,0.2);
+   }
+  }
+  if(e.boss&&e.health<150) e.mesh.material.color.set(0xaa0000);
+ });
+
+ ////// CAMERA FOLLOW
+ const camOffset=new THREE.Vector3(0,3,6);
+ camOffset.applyAxisAngle(new THREE.Vector3(1,0,0),camPitch);
+ camOffset.applyAxisAngle(new THREE.Vector3(0,1,0),camYaw);
+ camera.position.copy(player.mesh.position).add(camOffset);
+ camera.lookAt(player.mesh.position.clone().add(new THREE.Vector3(0,1,0)));
+
+ ////// COMPASS
+ const angle=(camYaw%(Math.PI*2)+Math.PI*2)%(Math.PI*2);
+ const dirs=["N","E","S","W"];
+ document.getElementById("compass").textContent=dirs[Math.round(angle/(Math.PI/2))%4];
+
+ updateHUD();
+ renderer.render(scene,camera);
+}
+animate();
+</script>
+
+</body>
+</html>
